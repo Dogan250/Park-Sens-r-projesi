@@ -10,71 +10,87 @@
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-// Ekran objesini oluştur (-1 reset pini yok demek)
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// --- HAREKETLİ ORTALAMA FİLTRESİ İÇİN DEĞİŞKENLER ---
+// 3.3V dalgalanmasını önlemek için son 5 ölçümün ortalamasını alacağız
+#define ORTALAMA_SAYISI 5
+float olcumler[ORTALAMA_SAYISI];
+int okumaSirasi = 0;
+float toplamMesafe = 0;
 
 void setup() {
   Serial.begin(115200);
 
-  // Sensör pin ayarları
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
 
-  // ESP32-S3 için I2C pinlerini manuel başlattım yoksa ekran sapıtıyor
   Wire.begin(SDA_PIN, SCL_PIN);
 
-  // Ekranı başlat (Adres genelde 0x3C oluyor, Çin işi OLED'lerde böyle)
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED patladı, kablolara bak");
-    for(;;); // Ekran yoksa sonsuz döngüye sok, sistemi kitle
+    Serial.println("OLED baslatilamadi, baglantilari kontrol et.");
+    while(true);
+  }
+
+  // Başlangıçta dizinin içinde çöp değer kalmasın diye içini sıfırlıyoruz
+  for (int i = 0; i < ORTALAMA_SAYISI; i++) {
+    olcumler[i] = 0;
   }
 
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE); // Zaten tek renk ama kütüphane istiyor
+  display.setTextColor(SSD1306_WHITE);
 }
 
 void loop() {
-  // Sensörü temizle (garanti olsun diye, bazen içinde parazit kalıyor)
+  // Sensörü tetikle
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
-
-  // 10 mikrosaniye tetikleme yolla (Sensöre 'ses dalgası gönder' diyoruz)
   digitalWrite(TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(TRIG_PIN, LOW);
 
-  // Yankıyı oku (30000 timeout koydum ki sensör okuyamazsa sistem kitlenip beklemesin)
   long sure = pulseIn(ECHO_PIN, HIGH, 30000);
+  float anlikMesafe = sure * 0.0343 / 2.0;
+  float gosterilecekMesafe = 0;
 
-  // Gidiş-dönüş süresini cm cinsinden mesafeye çevir
-  float mesafe = sure * 0.0343 / 2.0;
+  // Sensör saçmalamadıysa veriyi filtreye sok
+  if (sure != 0 && anlikMesafe > 0 && anlikMesafe <= 400) {
+    
+    // Dizideki en eski ölçümü toplamdan çıkar
+    toplamMesafe = toplamMesafe - olcumler[okumaSirasi];
+    
+    // Yeni ölçümü diziye yaz
+    olcumler[okumaSirasi] = anlikMesafe;
+    
+    // Yeni ölçümü toplama ekle
+    toplamMesafe = toplamMesafe + olcumler[okumaSirasi];
+    
+    // Sırayı bir ilerlet, dizinin sonuna geldiyse başa (0'a) dön
+    okumaSirasi = (okumaSirasi + 1) % ORTALAMA_SAYISI;
 
-  // Ekranı her loop'ta temizlemezsek yazılar üst üste biner
+    // Nihai ortalamayı hesapla
+    gosterilecekMesafe = toplamMesafe / ORTALAMA_SAYISI;
+  }
+
   display.clearDisplay();
-
-  // --- EKRAN TASARIMI ---
-  
-  // Üstteki "Mesafe:" yazısı (küçük font)
   display.setTextSize(1);
   display.setCursor(0, 0);
   display.println("Mesafe:");
 
-  // Alttaki değer kısmı (büyük font)
   display.setTextSize(2);
   display.setCursor(0, 20);
 
-  // Eğer sensörden 0 döndüyse veya elimi çok yapıştırıp sensörü kör ettiysem "Yok" yaz
-  if (sure == 0 || mesafe <= 0 || mesafe > 400) {
+  // Sensör tamamen boşa düştüyse veya çok yakınsa hala "Yok" yazsın
+  if (sure == 0 || anlikMesafe <= 0 || anlikMesafe > 400) {
     display.print("Yok");
   } else {
-    // Virgülden sonra 1 hane göstersin (15.2 cm gibi)
-    display.print(mesafe, 1);
+    // Ham veriyi değil, filtrelenmiş pürüzsüz ortalama değeri yazdır
+    display.print(gosterilecekMesafe, 1);
     display.print(" cm");
   }
 
-  // Çizdiğimiz her şeyi ekrana bas
   display.display();
-
-  // Çok hızlı okuyup ekranı titretmemek için ufak bekleme
+  
+  // Ekranın çok hızlı titremesini engellemek için gecikme
   delay(100);
 }
